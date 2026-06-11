@@ -1,3 +1,4 @@
+export const initialMigrationSql = `
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 DO $$ BEGIN
@@ -110,3 +111,4 @@ CREATE TABLE IF NOT EXISTS job_runs (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_job_runs_run_key ON job_runs(run_key);
 CREATE INDEX IF NOT EXISTS ix_job_runs_status ON job_runs(status);
 CREATE INDEX IF NOT EXISTS ix_job_runs_type_started ON job_runs(job_type, started_at);
+`;
