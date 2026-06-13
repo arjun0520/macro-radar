@@ -12,7 +12,14 @@ export type SourceItemInput = {
   rawJson?: Record<string, unknown>;
 };
 
+export type SourceCollectorStat = {
+  sourceType: SourceType;
+  sourceName: string;
+  itemCount: number;
+};
+
 export type SourceCollectionResult = {
   items: SourceItemInput[];
   warnings: string[];
+  stats?: SourceCollectorStat[];
 };

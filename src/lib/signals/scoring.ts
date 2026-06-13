@@ -98,12 +98,10 @@ function normalizeBreakdown(input: Partial<ScoreBreakdown>): ScoreBreakdown {
 
 function portfolioRelevance(affectedSymbols: AffectedSymbol[], watchlist: WatchlistItem[]): number {
   if (affectedSymbols.length === 0) return 45;
-  const activeWeights = watchlist.map((item) => item.portfolioWeight ?? 1 / Math.max(watchlist.length, 1));
-  const maxWeight = Math.max(...activeWeights, 0.01);
-  const bySymbol = new Map(watchlist.map((item, index) => [item.symbol, activeWeights[index] / maxWeight]));
+  const watchlistSymbols = new Set(watchlist.map((item) => item.symbol.toUpperCase()));
   const relevance = affectedSymbols.reduce((max, item) => {
-    const weightFactor = bySymbol.get(item.symbol.toUpperCase()) ?? 0.5;
-    return Math.max(max, item.relevance * (0.7 + weightFactor * 0.3));
+    if (!watchlistSymbols.has(item.symbol.toUpperCase())) return max;
+    return Math.max(max, item.relevance);
   }, 0);
   return clamp(Math.round(relevance));
 }

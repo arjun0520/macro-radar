@@ -68,6 +68,7 @@ export async function runDailyDigest({ force = false }: { force?: boolean } = {}
       pendingAlertCount: pendingAlerts.length,
       emailStatus: emailResult.status,
       usedFallback: llmResult.usedFallback,
+      sourceBreakdown: sourceResult.stats ?? [],
       warnings: [...sourceResult.warnings, ...llmResult.warnings]
     };
     await finishJobRun(started.run.id, "completed", details);

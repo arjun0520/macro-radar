@@ -52,14 +52,49 @@ export default async function SettingsPage() {
           <p className="text-sm font-black">Recent job runs</p>
           <div className="mt-3 space-y-3">
             {jobs.length > 0 ? (
-              jobs.map((job) => (
-                <div key={job.id} className="rounded-2xl bg-white/70 p-3">
-                  <p className="font-bold">
-                    {job.status} · {job.startedAt.toLocaleString()}
-                  </p>
-                  {job.error ? <p className="mt-1 text-xs text-danger">{job.error}</p> : null}
-                </div>
-              ))
+              jobs.map((job) => {
+                const details = job.details as {
+                  sourceItemCount?: number;
+                  signalCount?: number;
+                  pendingAlertCount?: number;
+                  usedFallback?: boolean;
+                  sourceBreakdown?: Array<{ sourceName: string; sourceType: string; itemCount: number }>;
+                  warnings?: string[];
+                };
+                return (
+                  <div key={job.id} className="rounded-2xl bg-white/70 p-3">
+                    <p className="font-bold">
+                      {job.status} · {job.startedAt.toLocaleString()}
+                    </p>
+                    <p className="mt-1 text-xs text-ink/50">
+                      Sources: {details.sourceItemCount ?? 0} · Signals: {details.signalCount ?? 0} · Alerts:{" "}
+                      {details.pendingAlertCount ?? 0} {details.usedFallback ? "· fallback ranking" : ""}
+                    </p>
+                    {details.sourceBreakdown?.length ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {details.sourceBreakdown.slice(0, 8).map((source) => (
+                          <span
+                            key={`${job.id}-${source.sourceType}-${source.sourceName}`}
+                            className="rounded-full bg-limewash px-3 py-1 text-[11px] font-bold text-forest"
+                          >
+                            {source.sourceName}: {source.itemCount}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {details.warnings?.length ? (
+                      <div className="mt-3 space-y-1">
+                        {details.warnings.slice(0, 5).map((warning) => (
+                          <p key={warning} className="text-xs text-warning">
+                            {warning}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                    {job.error ? <p className="mt-1 text-xs text-danger">{job.error}</p> : null}
+                  </div>
+                );
+              })
             ) : (
               <p className="text-sm text-ink/60">No runs yet.</p>
             )}

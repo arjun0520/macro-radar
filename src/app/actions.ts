@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
-import { deactivateWatchlistItem, upsertWatchlistItem } from "@/db/repository";
+import { deactivateWatchlistItem, saveSignalFeedback, upsertWatchlistItem } from "@/db/repository";
 import { clearSession, requireUser } from "@/lib/auth/session";
 
 const watchlistSchema = z.object({
@@ -48,4 +48,20 @@ export async function removeWatchlistItemAction(formData: FormData) {
 export async function logoutAction() {
   await clearSession();
   redirect("/login");
+}
+
+export async function saveSignalFeedbackAction(formData: FormData) {
+  await requireUser();
+  const signalScoreId = String(formData.get("signalScoreId") ?? "");
+  const rating = String(formData.get("rating") ?? "");
+  if (!signalScoreId || !["useful", "noise", "not_relevant"].includes(rating)) {
+    throw new Error("Invalid signal feedback.");
+  }
+
+  await saveSignalFeedback({
+    signalScoreId,
+    rating: rating as "useful" | "noise" | "not_relevant",
+    notes: String(formData.get("notes") ?? "")
+  });
+  revalidatePath(`/signals/${signalScoreId}`);
 }

@@ -10,6 +10,7 @@ import {
   jobRuns,
   macroEvents,
   type ScoreBreakdown,
+  signalFeedback,
   signalScores,
   sourceItems,
   watchlistItems
@@ -21,6 +22,7 @@ export type SignalScore = typeof signalScores.$inferSelect;
 export type MacroEvent = typeof macroEvents.$inferSelect;
 export type AlertRecord = typeof alerts.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
+export type SignalFeedback = typeof signalFeedback.$inferSelect;
 
 export type SignalWithEvent = SignalScore & {
   event: MacroEvent;
@@ -320,6 +322,42 @@ export async function listUpcomingEvents(daysAhead = 45): Promise<MacroEvent[]> 
 export async function listRecentJobRuns(limit = 10): Promise<JobRun[]> {
   const db = requireDatabase();
   return db.select().from(jobRuns).orderBy(desc(jobRuns.startedAt)).limit(limit);
+}
+
+export async function saveSignalFeedback(input: {
+  signalScoreId: string;
+  rating: "useful" | "noise" | "not_relevant";
+  notes?: string | null;
+}) {
+  const db = requireDatabase();
+  const [feedback] = await db
+    .insert(signalFeedback)
+    .values({
+      signalScoreId: input.signalScoreId,
+      rating: input.rating,
+      notes: input.notes?.trim() || null,
+      updatedAt: new Date()
+    })
+    .onConflictDoUpdate({
+      target: signalFeedback.signalScoreId,
+      set: {
+        rating: input.rating,
+        notes: input.notes?.trim() || null,
+        updatedAt: new Date()
+      }
+    })
+    .returning();
+  return feedback;
+}
+
+export async function getSignalFeedback(signalScoreId: string): Promise<SignalFeedback | null> {
+  const db = requireDatabase();
+  const rows = await db
+    .select()
+    .from(signalFeedback)
+    .where(eq(signalFeedback.signalScoreId, signalScoreId))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function createPendingAlertsForSignals(signals: SignalWithEvent[], threshold = 80) {
