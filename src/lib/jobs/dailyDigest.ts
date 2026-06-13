@@ -23,12 +23,16 @@ export type DailyDigestResult = {
 };
 
 export async function runDailyDigest({ force = false }: { force?: boolean } = {}): Promise<DailyDigestResult> {
+  const stepTimings: StepTiming[] = [];
   try {
-    await ensureDatabaseMigrated();
+    await recordStep(stepTimings, "auto_migration", () => ensureDatabaseMigrated());
   } catch (error) {
     return {
       status: "failed",
-      details: { error: `Automatic database migration failed: ${error instanceof Error ? error.message : "unknown error"}` }
+      details: {
+        error: `Automatic database migration failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        stepTimings
+      }
     };
   }
 
@@ -49,27 +53,31 @@ export async function runDailyDigest({ force = false }: { force?: boolean } = {}
   }
 
   try {
-    const watchlist = await listWatchlistItems(true);
-    const sourceResult = await collectAllSources(watchlist);
-    const sourceRows = await upsertSourceItems(sourceResult.items);
-    const calendarRows = await upsertEconomicCalendarEvents(sourceResult.calendarEvents ?? []);
-    const llmResult = await extractAndScoreSignals(sourceResult.items, watchlist);
-    const savedSignals = await saveSignalRecords(llmResult.records);
-    const pendingAlerts = await createPendingAlertsForSignals(savedSignals, 80);
-    const alertsToSend = await listPendingAlerts();
-    const emailResult = await sendSignalEmail(alertsToSend);
+    const watchlist = await recordStep(stepTimings, "load_watchlist", () => listWatchlistItems(true));
+    const sourceResult = await recordStep(stepTimings, "collect_sources", () => collectAllSources(watchlist));
+    const sourceRows = await recordStep(stepTimings, "store_source_items", () => upsertSourceItems(sourceResult.items));
+    const calendarRows = await recordStep(stepTimings, "store_calendar_events", () =>
+      upsertEconomicCalendarEvents(sourceResult.calendarEvents ?? [])
+    );
+    const llmResult = await recordStep(stepTimings, "extract_and_rank_signals", () =>
+      extractAndScoreSignals(sourceResult.items, watchlist)
+    );
+    const savedSignals = await recordStep(stepTimings, "store_signals", () => saveSignalRecords(llmResult.records));
+    const pendingAlerts = await recordStep(stepTimings, "create_alerts", () => createPendingAlertsForSignals(savedSignals, 80));
+    const alertsToSend = await recordStep(stepTimings, "load_pending_alerts", () => listPendingAlerts());
+    const emailResult = await recordStep(stepTimings, "send_email_alerts", () => sendSignalEmail(alertsToSend));
 
     if (emailResult.status === "sent") {
-      await markAlerts(
+      await recordStep(stepTimings, "mark_sent_alerts", () => markAlerts(
         alertsToSend.map((alert) => alert.id),
         "sent"
-      );
+      ));
     } else if (emailResult.status === "skipped") {
-      await markAlerts(
+      await recordStep(stepTimings, "mark_skipped_alerts", () => markAlerts(
         pendingAlerts.map((alert) => alert.id),
         "skipped",
         emailResult.reason
-      );
+      ));
     }
 
     const details = {
@@ -82,6 +90,8 @@ export async function runDailyDigest({ force = false }: { force?: boolean } = {}
       pendingAlertCount: pendingAlerts.length,
       emailStatus: emailResult.status,
       usedFallback: llmResult.usedFallback,
+      llm: llmResult.diagnostics,
+      stepTimings,
       sourceBreakdown: sourceResult.stats ?? [],
       warnings: [...sourceResult.warnings, ...llmResult.warnings]
     };
@@ -89,7 +99,32 @@ export async function runDailyDigest({ force = false }: { force?: boolean } = {}
     return { status: "completed", runId: started.run.id, details };
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
-    await finishJobRun(started.run.id, "failed", { failedAt: new Date().toISOString() }, message);
-    return { status: "failed", runId: started.run.id, details: { error: message } };
+    const details = { failedAt: new Date().toISOString(), stepTimings };
+    await finishJobRun(started.run.id, "failed", details, message);
+    return { status: "failed", runId: started.run.id, details: { ...details, error: message } };
+  }
+}
+
+type StepTiming = {
+  step: string;
+  status: "ok" | "failed";
+  durationMs: number;
+  error?: string;
+};
+
+async function recordStep<T>(stepTimings: StepTiming[], step: string, action: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    const result = await action();
+    stepTimings.push({ step, status: "ok", durationMs: Date.now() - startedAt });
+    return result;
+  } catch (error) {
+    stepTimings.push({
+      step,
+      status: "failed",
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : "unknown error"
+    });
+    throw error;
   }
 }

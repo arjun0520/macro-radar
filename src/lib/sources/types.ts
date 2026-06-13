@@ -1,4 +1,15 @@
-export type SourceType = "fred" | "bls" | "sec" | "finnhub" | "rss" | "trading_economics" | "fmp";
+export type SourceType =
+  | "fred"
+  | "bls"
+  | "sec"
+  | "finnhub"
+  | "rss"
+  | "trading_economics"
+  | "fmp"
+  | "treasury"
+  | "bea"
+  | "eia"
+  | "census";
 
 export type SourceItemInput = {
   sourceType: SourceType;

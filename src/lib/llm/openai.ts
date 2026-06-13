@@ -9,11 +9,49 @@ import {
 } from "@/lib/signals/scoring";
 import type { SourceItemInput } from "@/lib/sources/types";
 
+const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+
 type ExtractedCandidate = Omit<RawSignalCandidate, "breakdown"> & {
   evidenceLevel: "strong" | "medium" | "weak";
   marketMechanism: string;
   whyNow: string;
 };
+
+type OpenAiPhase = "extraction" | "ranking";
+
+export type LlmPhaseDiagnostic = {
+  phase: OpenAiPhase;
+  model: string;
+  ok: boolean;
+  status?: number;
+  durationMs: number;
+  inputCount?: number;
+  outputCount?: number;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
+export type LlmDiagnostics = {
+  enabled: boolean;
+  requestedModel?: string;
+  sanitizedModel?: string;
+  modelSanitized: boolean;
+  fallbackModel?: string;
+  fallbackModelUsed: boolean;
+  phases: LlmPhaseDiagnostic[];
+  finalSignalCount?: number;
+  selectedSignalCount?: number;
+};
+
+type OpenAiSignalResult = {
+  signals: RawSignalCandidate[];
+  diagnostics: LlmDiagnostics;
+  warning?: string;
+};
+
+type OpenAiCallResult<T> =
+  | { ok: true; data: T; diagnostic: LlmPhaseDiagnostic }
+  | { ok: false; warning: string; diagnostic: LlmPhaseDiagnostic };
 
 const citationSchema = z.object({
   title: z.string(),
@@ -80,30 +118,39 @@ const extractionResponseSchema: z.ZodType<{ candidates: ExtractedCandidate[] }> 
 export async function extractAndScoreSignals(
   sourceItems: SourceItemInput[],
   watchlist: WatchlistItem[]
-): Promise<{ records: SignalRecordInput[]; usedFallback: boolean; warnings: string[] }> {
+): Promise<{ records: SignalRecordInput[]; usedFallback: boolean; warnings: string[]; diagnostics: LlmDiagnostics }> {
+  const diagnostics = createLlmDiagnostics(Boolean(process.env.OPENAI_API_KEY));
   if (sourceItems.length === 0) {
-    return { records: [], usedFallback: false, warnings: [] };
+    diagnostics.finalSignalCount = 0;
+    diagnostics.selectedSignalCount = 0;
+    return { records: [], usedFallback: false, warnings: [], diagnostics };
   }
 
   const candidates = process.env.OPENAI_API_KEY
     ? await callOpenAi(sourceItems, watchlist)
     : {
         signals: fallbackSignalsFromSources(sourceItems, watchlist),
+        diagnostics,
         warning: "OPENAI_API_KEY not configured; used deterministic source fallback."
       };
 
   const parsed = responseSchema.safeParse({ signals: candidates.signals });
   if (!parsed.success) {
     const fallback = fallbackSignalsFromSources(sourceItems, watchlist);
+    candidates.diagnostics.finalSignalCount = fallback.length;
+    candidates.diagnostics.selectedSignalCount = Math.min(fallback.length, 20);
     return {
       records: toSignalRecords(fallback, watchlist),
       usedFallback: true,
-      warnings: [`LLM output failed validation; used fallback. ${parsed.error.message}`]
+      warnings: [`LLM output failed validation; used fallback. ${parsed.error.message}`],
+      diagnostics: candidates.diagnostics
     };
   }
 
   const enrichedSignals = applySourceScoreHints(parsed.data.signals, sourceItems);
   const selectedSignals = selectTopCandidates(enrichedSignals, watchlist, 20);
+  candidates.diagnostics.finalSignalCount = enrichedSignals.length;
+  candidates.diagnostics.selectedSignalCount = selectedSignals.length;
   const warnings = candidates.warning ? [candidates.warning] : [];
   if (enrichedSignals.length > selectedSignals.length) {
     warnings.push(`LLM returned ${enrichedSignals.length} signals; kept top ${selectedSignals.length}.`);
@@ -112,7 +159,8 @@ export async function extractAndScoreSignals(
   return {
     records: toSignalRecords(selectedSignals, watchlist),
     usedFallback: Boolean(candidates.warning),
-    warnings
+    warnings,
+    diagnostics: candidates.diagnostics
   };
 }
 
@@ -146,44 +194,54 @@ export function toSignalRecords(candidates: RawSignalCandidate[], watchlist: Wat
 async function callOpenAi(
   sourceItems: SourceItemInput[],
   watchlist: WatchlistItem[]
-): Promise<{ signals: RawSignalCandidate[]; warning?: string }> {
-  const extracted = await callOpenAiJson(
-    buildExtractionPayload(sourceItems, watchlist),
+): Promise<OpenAiSignalResult> {
+  const diagnostics = createLlmDiagnostics(true);
+  const model = diagnostics.sanitizedModel ?? DEFAULT_OPENAI_MODEL;
+  const extracted = await callOpenAiJsonWithFallback(
+    (selectedModel) => buildExtractionPayload(sourceItems, watchlist, selectedModel),
     extractionResponseSchema,
-    "extraction"
+    "extraction",
+    diagnostics,
+    model,
+    sourceItems.length
   );
 
   if (!extracted.ok) {
     return {
       signals: fallbackSignalsFromSources(sourceItems, watchlist),
+      diagnostics,
       warning: `${extracted.warning}; used deterministic source fallback.`
     };
   }
 
   if (extracted.data.candidates.length === 0) {
-    return { signals: [] };
+    return { signals: [], diagnostics };
   }
 
-  const ranked = await callOpenAiJson(
-    buildRankingPayload(extracted.data.candidates, sourceItems, watchlist),
+  const ranked = await callOpenAiJsonWithFallback(
+    (selectedModel) => buildRankingPayload(extracted.data.candidates, sourceItems, watchlist, selectedModel),
     responseSchema,
-    "ranking"
+    "ranking",
+    diagnostics,
+    model,
+    extracted.data.candidates.length
   );
 
   if (!ranked.ok) {
     return {
       signals: fallbackSignalsFromSources(sourceItems, watchlist),
+      diagnostics,
       warning: `${ranked.warning}; used deterministic source fallback.`
     };
   }
 
-  return ranked.data;
+  return { ...ranked.data, diagnostics };
 }
 
-function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: WatchlistItem[]) {
+function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: WatchlistItem[], model: string) {
   const prioritizedSourceItems = prioritizeSourceItemsForLlm(sourceItems).slice(0, 100);
   return {
-    model: process.env.OPENAI_MODEL ?? "gpt-5.5",
+    model,
     reasoning: { effort: "low" },
     text: {
       format: {
@@ -197,7 +255,7 @@ function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: Watch
       {
         role: "system",
         content:
-          "You are Macro Radar's extraction engine. Extract concrete macro, policy, earnings, filing, and company-news candidates from provided source items. Do not score them. Do not invent facts. Use only supplied source hashes and web-search verification when needed."
+          "You are Macro Radar's extraction engine. Extract concrete macro, policy, earnings, filing, and company-news candidates from provided source items. Do not score them. Do not invent facts. Use only supplied source hashes and source content."
       },
       {
         role: "user",
@@ -234,11 +292,12 @@ function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: Watch
 function buildRankingPayload(
   candidates: ExtractedCandidate[],
   sourceItems: SourceItemInput[],
-  watchlist: WatchlistItem[]
+  watchlist: WatchlistItem[],
+  model: string
 ) {
   const prioritizedSourceItems = prioritizeSourceItemsForLlm(sourceItems).slice(0, 120);
   return {
-    model: process.env.OPENAI_MODEL ?? "gpt-5.5",
+    model,
     reasoning: { effort: "low" },
     text: {
       format: {
@@ -366,7 +425,7 @@ function readMacroImpact(rawJson?: Record<string, unknown>): {
 }
 
 function sourceCredibilityScore(sourceType: SourceItemInput["sourceType"]): number {
-  if (["bls", "fred", "sec"].includes(sourceType)) return 94;
+  if (["bea", "bls", "census", "eia", "fred", "sec", "treasury"].includes(sourceType)) return 94;
   if (["trading_economics", "fmp", "finnhub"].includes(sourceType)) return 82;
   return 72;
 }
@@ -378,8 +437,11 @@ function readNumber(value: unknown): number | undefined {
 async function callOpenAiJson<T>(
   payload: Record<string, unknown>,
   schema: z.ZodType<T>,
-  phase: string
-): Promise<{ ok: true; data: T } | { ok: false; warning: string }> {
+  phase: OpenAiPhase,
+  model: string,
+  inputCount?: number
+): Promise<OpenAiCallResult<T>> {
+  const startedAt = Date.now();
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -388,29 +450,143 @@ async function callOpenAiJson<T>(
     },
     body: JSON.stringify(payload)
   });
+  const baseDiagnostic = {
+    phase,
+    model,
+    durationMs: Date.now() - startedAt,
+    inputCount
+  };
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
+    const parsedError = parseOpenAiError(errorText);
     return {
       ok: false,
-      warning: `OpenAI ${phase} request failed (${response.status})${errorText ? `: ${errorText.slice(0, 500)}` : ""}`
+      warning: `OpenAI ${phase} request failed (${response.status})${errorText ? `: ${errorText.slice(0, 500)}` : ""}`,
+      diagnostic: {
+        ...baseDiagnostic,
+        ok: false,
+        status: response.status,
+        errorCode: parsedError.errorCode,
+        errorMessage: parsedError.errorMessage
+      }
     };
   }
 
   const data = (await response.json()) as { output_text?: string; output?: unknown };
   const text = data.output_text ?? extractOutputText(data.output);
   if (!text) {
-    return { ok: false, warning: `OpenAI ${phase} response had no output_text` };
+    return {
+      ok: false,
+      warning: `OpenAI ${phase} response had no output_text`,
+      diagnostic: { ...baseDiagnostic, ok: false, status: response.status, errorCode: "missing_output_text" }
+    };
   }
 
   try {
-    return { ok: true, data: schema.parse(JSON.parse(text)) };
+    const parsed = schema.parse(JSON.parse(text));
+    return {
+      ok: true,
+      data: parsed,
+      diagnostic: {
+        ...baseDiagnostic,
+        ok: true,
+        status: response.status,
+        outputCount: countOutputItems(parsed)
+      }
+    };
   } catch (error) {
     return {
       ok: false,
-      warning: `OpenAI ${phase} JSON validation failed${error instanceof Error ? `: ${error.message}` : ""}`
+      warning: `OpenAI ${phase} JSON validation failed${error instanceof Error ? `: ${error.message}` : ""}`,
+      diagnostic: {
+        ...baseDiagnostic,
+        ok: false,
+        status: response.status,
+        errorCode: "json_validation_failed",
+        errorMessage: error instanceof Error ? error.message : undefined
+      }
     };
   }
+}
+
+async function callOpenAiJsonWithFallback<T>(
+  buildPayload: (model: string) => Record<string, unknown>,
+  schema: z.ZodType<T>,
+  phase: OpenAiPhase,
+  diagnostics: LlmDiagnostics,
+  model: string,
+  inputCount?: number
+): Promise<OpenAiCallResult<T>> {
+  const primaryResult = await callOpenAiJson(buildPayload(model), schema, phase, model, inputCount);
+  diagnostics.phases.push(primaryResult.diagnostic);
+
+  if (!primaryResult.ok && primaryResult.diagnostic.errorCode === "model_not_found" && diagnostics.fallbackModel) {
+    const fallbackResult = await callOpenAiJson(
+      buildPayload(diagnostics.fallbackModel),
+      schema,
+      phase,
+      diagnostics.fallbackModel,
+      inputCount
+    );
+    diagnostics.fallbackModelUsed = true;
+    diagnostics.phases.push(fallbackResult.diagnostic);
+    return fallbackResult;
+  }
+
+  return primaryResult;
+}
+
+function createLlmDiagnostics(enabled: boolean): LlmDiagnostics {
+  const requestedModel = process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
+  const sanitizedModel = sanitizeEnvValue(requestedModel) ?? DEFAULT_OPENAI_MODEL;
+  const fallbackModel = sanitizeEnvValue(process.env.OPENAI_FALLBACK_MODEL);
+  return {
+    enabled,
+    requestedModel,
+    sanitizedModel,
+    modelSanitized: requestedModel !== sanitizedModel,
+    fallbackModel: fallbackModel && fallbackModel !== sanitizedModel ? fallbackModel : undefined,
+    fallbackModelUsed: false,
+    phases: []
+  };
+}
+
+export function sanitizeEnvValue(value?: string | null): string | undefined {
+  let normalized = value?.trim();
+  if (!normalized) return undefined;
+
+  for (let index = 0; index < 3; index += 1) {
+    const hasDoubleQuotes = normalized.startsWith('"') && normalized.endsWith('"');
+    const hasSingleQuotes = normalized.startsWith("'") && normalized.endsWith("'");
+    if (!hasDoubleQuotes && !hasSingleQuotes) break;
+    normalized = normalized.slice(1, -1).trim();
+  }
+
+  return normalized || undefined;
+}
+
+function parseOpenAiError(errorText: string): { errorCode?: string; errorMessage?: string } {
+  try {
+    const parsed = JSON.parse(errorText) as { error?: { code?: string; type?: string; message?: string } };
+    return {
+      errorCode: parsed.error?.code ?? parsed.error?.type,
+      errorMessage: parsed.error?.message
+    };
+  } catch {
+    return { errorMessage: errorText.slice(0, 500) || undefined };
+  }
+}
+
+function countOutputItems(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if ("signals" in value && Array.isArray((value as { signals?: unknown }).signals)) {
+    return (value as { signals: unknown[] }).signals.length;
+  }
+  if ("candidates" in value && Array.isArray((value as { candidates?: unknown }).candidates)) {
+    return (value as { candidates: unknown[] }).candidates.length;
+  }
+  return undefined;
 }
 
 function parseEventDate(value?: string | null): Date | null {

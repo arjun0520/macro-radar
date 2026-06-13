@@ -1,10 +1,14 @@
 import type { WatchlistItem } from "@/db/repository";
+import { collectBeaGdpGrowth } from "@/lib/sources/bea";
 import { collectBlsLatestIndicators } from "@/lib/sources/bls";
+import { collectCensusRetailSales } from "@/lib/sources/census";
 import { collectFmpEconomicCalendar, collectTradingEconomicsCalendar } from "@/lib/sources/economicCalendar";
+import { collectEiaWeeklyPetroleumStocks } from "@/lib/sources/eia";
 import { collectFinnhubCompanyNews, collectFinnhubEarnings } from "@/lib/sources/finnhub";
 import { collectFredMacroIntelligence, collectFredReleaseItems } from "@/lib/sources/fred";
 import { collectMacroRssItems } from "@/lib/sources/rss";
 import { collectSecFilings } from "@/lib/sources/sec";
+import { collectTreasuryAverageInterestRates } from "@/lib/sources/treasury";
 import type { EconomicCalendarEventInput, SourceCollectionResult, SourceCollectorStat, SourceItemInput } from "@/lib/sources/types";
 
 export async function collectAllSources(watchlist: WatchlistItem[]): Promise<SourceCollectionResult> {
@@ -14,6 +18,10 @@ export async function collectAllSources(watchlist: WatchlistItem[]): Promise<Sou
     collectTradingEconomicsCalendar(),
     collectFmpEconomicCalendar(),
     collectBlsLatestIndicators(),
+    collectBeaGdpGrowth(),
+    collectTreasuryAverageInterestRates(),
+    collectEiaWeeklyPetroleumStocks(),
+    collectCensusRetailSales(),
     collectFredReleaseItems(),
     collectFredMacroIntelligence(),
     collectSecFilings(symbols),
