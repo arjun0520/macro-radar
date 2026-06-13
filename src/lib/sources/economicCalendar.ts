@@ -57,7 +57,7 @@ export async function collectTradingEconomicsCalendar(daysBack = 2, daysAhead = 
     return {
       items: [],
       calendarEvents: [],
-      warnings: ["TRADING_ECONOMICS_API_KEY not configured; skipped Trading Economics calendar."]
+      warnings: []
     };
   }
 
@@ -111,7 +111,7 @@ export async function collectFmpEconomicCalendar(daysBack = 2, daysAhead = 21): 
     return {
       items: [],
       calendarEvents: [],
-      warnings: ["FMP_API_KEY not configured; skipped Financial Modeling Prep economic calendar."]
+      warnings: []
     };
   }
 
@@ -122,6 +122,13 @@ export async function collectFmpEconomicCalendar(daysBack = 2, daysAhead = 21): 
 
   try {
     const response = await fetch(url, { next: { revalidate: 1800 } });
+    if (response.status === 402) {
+      return {
+        items: [],
+        calendarEvents: [],
+        warnings: ["FMP economic calendar is not available on the current FMP plan (402); skipped this source."]
+      };
+    }
     if (!response.ok) throw new Error(`FMP ${response.status}`);
     const payload = (await response.json()) as FmpCalendarEvent[];
     return normalizeCalendarEvents(

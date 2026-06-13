@@ -185,12 +185,6 @@ function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: Watch
   return {
     model: process.env.OPENAI_MODEL ?? "gpt-5.5",
     reasoning: { effort: "low" },
-    tools: [
-      {
-        type: "web_search",
-        search_context_size: "low"
-      }
-    ],
     text: {
       format: {
         type: "json_schema",
@@ -246,12 +240,6 @@ function buildRankingPayload(
   return {
     model: process.env.OPENAI_MODEL ?? "gpt-5.5",
     reasoning: { effort: "low" },
-    tools: [
-      {
-        type: "web_search",
-        search_context_size: "low"
-      }
-    ],
     text: {
       format: {
         type: "json_schema",
@@ -402,7 +390,11 @@ async function callOpenAiJson<T>(
   });
 
   if (!response.ok) {
-    return { ok: false, warning: `OpenAI ${phase} request failed (${response.status})` };
+    const errorText = await response.text().catch(() => "");
+    return {
+      ok: false,
+      warning: `OpenAI ${phase} request failed (${response.status})${errorText ? `: ${errorText.slice(0, 500)}` : ""}`
+    };
   }
 
   const data = (await response.json()) as { output_text?: string; output?: unknown };
