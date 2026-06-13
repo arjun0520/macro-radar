@@ -1,5 +1,6 @@
 import "server-only";
 
+import { ensureDatabaseMigrated } from "@/db/migrate";
 import {
   createPendingAlertsForSignals,
   finishJobRun,
@@ -22,6 +23,15 @@ export type DailyDigestResult = {
 };
 
 export async function runDailyDigest({ force = false }: { force?: boolean } = {}): Promise<DailyDigestResult> {
+  try {
+    await ensureDatabaseMigrated();
+  } catch (error) {
+    return {
+      status: "failed",
+      details: { error: `Automatic database migration failed: ${error instanceof Error ? error.message : "unknown error"}` }
+    };
+  }
+
   const dateKey = new Date().toISOString().slice(0, 10);
   const started = await startJobRun({
     jobType: "daily-digest",
