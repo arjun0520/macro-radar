@@ -142,6 +142,22 @@ export const alerts = pgTable(
   })
 );
 
+export const signalFeedback = pgTable(
+  "signal_feedback",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    signalScoreId: uuid("signal_score_id").notNull().references(() => signalScores.id, { onDelete: "cascade" }),
+    rating: varchar("rating", { length: 32 }).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    signalScoreIdx: uniqueIndex("ux_signal_feedback_score").on(table.signalScoreId),
+    ratingIdx: index("ix_signal_feedback_rating").on(table.rating)
+  })
+);
+
 export const jobRuns = pgTable(
   "job_runs",
   {

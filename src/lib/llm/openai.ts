@@ -9,46 +9,73 @@ import {
 } from "@/lib/signals/scoring";
 import type { SourceItemInput } from "@/lib/sources/types";
 
-const candidateSchema = z.object({
+type ExtractedCandidate = Omit<RawSignalCandidate, "breakdown"> & {
+  evidenceLevel: "strong" | "medium" | "weak";
+  marketMechanism: string;
+  whyNow: string;
+};
+
+const citationSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  source: z.string(),
+  publishedAt: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? undefined)
+});
+
+const affectedSymbolSchema = z.object({
+  symbol: z.string(),
+  relevance: z.number().min(0).max(100),
+  rationale: z.string()
+});
+
+const breakdownSchema = z.object({
+  portfolioRelevance: z.number().min(0).max(100),
+  timeProximity: z.number().min(0).max(100),
+  magnitudeSurprise: z.number().min(0).max(100),
+  sourceCredibility: z.number().min(0).max(100),
+  marketBreadth: z.number().min(0).max(100),
+  modelConfidence: z.number().min(0).max(100)
+});
+
+const candidateSchema: z.ZodType<RawSignalCandidate> = z.object({
   sourceItemContentHash: z.string().nullable().optional(),
   eventType: z.string().min(1),
   title: z.string().min(1),
   summary: z.string().min(1),
   eventDate: z.string().nullable().optional(),
-  citations: z
-    .array(
-      z.object({
-        title: z.string(),
-        url: z.string(),
-        source: z.string(),
-        publishedAt: z.string().optional()
-      })
-    )
-    .default([]),
-  affectedSymbols: z
-    .array(
-      z.object({
-        symbol: z.string(),
-        relevance: z.number().min(0).max(100),
-        rationale: z.string()
-      })
-    )
-    .default([]),
+  citations: z.array(citationSchema).default([]),
+  affectedSymbols: z.array(affectedSymbolSchema).default([]),
   directionalSuggestion: z.string().min(1),
   reason: z.string().min(1),
-  breakdown: z.object({
-    portfolioRelevance: z.number().min(0).max(100),
-    timeProximity: z.number().min(0).max(100),
-    magnitudeSurprise: z.number().min(0).max(100),
-    sourceCredibility: z.number().min(0).max(100),
-    marketBreadth: z.number().min(0).max(100),
-    modelConfidence: z.number().min(0).max(100)
-  })
-});
+  breakdown: breakdownSchema
+}) as z.ZodType<RawSignalCandidate>;
 
-const responseSchema = z.object({
+const responseSchema: z.ZodType<{ signals: RawSignalCandidate[] }> = z.object({
   signals: z.array(candidateSchema).max(20)
-});
+}) as z.ZodType<{ signals: RawSignalCandidate[] }>;
+
+const extractedCandidateSchema: z.ZodType<ExtractedCandidate> = z.object({
+  sourceItemContentHash: z.string().nullable().optional(),
+  eventType: z.string().min(1),
+  title: z.string().min(1),
+  summary: z.string().min(1),
+  eventDate: z.string().nullable().optional(),
+  citations: z.array(citationSchema).default([]),
+  affectedSymbols: z.array(affectedSymbolSchema).default([]),
+  directionalSuggestion: z.string().min(1),
+  reason: z.string().min(1),
+  evidenceLevel: z.enum(["strong", "medium", "weak"]).default("medium"),
+  marketMechanism: z.string().default(""),
+  whyNow: z.string().default("")
+}) as z.ZodType<ExtractedCandidate>;
+
+const extractionResponseSchema: z.ZodType<{ candidates: ExtractedCandidate[] }> = z.object({
+  candidates: z.array(extractedCandidateSchema).max(30)
+}) as z.ZodType<{ candidates: ExtractedCandidate[] }>;
 
 export async function extractAndScoreSignals(
   sourceItems: SourceItemInput[],
@@ -113,7 +140,41 @@ async function callOpenAi(
   sourceItems: SourceItemInput[],
   watchlist: WatchlistItem[]
 ): Promise<{ signals: RawSignalCandidate[]; warning?: string }> {
-  const payload = {
+  const extracted = await callOpenAiJson(
+    buildExtractionPayload(sourceItems, watchlist),
+    extractionResponseSchema,
+    "extraction"
+  );
+
+  if (!extracted.ok) {
+    return {
+      signals: fallbackSignalsFromSources(sourceItems, watchlist),
+      warning: `${extracted.warning}; used deterministic source fallback.`
+    };
+  }
+
+  if (extracted.data.candidates.length === 0) {
+    return { signals: [] };
+  }
+
+  const ranked = await callOpenAiJson(
+    buildRankingPayload(extracted.data.candidates, sourceItems, watchlist),
+    responseSchema,
+    "ranking"
+  );
+
+  if (!ranked.ok) {
+    return {
+      signals: fallbackSignalsFromSources(sourceItems, watchlist),
+      warning: `${ranked.warning}; used deterministic source fallback.`
+    };
+  }
+
+  return ranked.data;
+}
+
+function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: WatchlistItem[]) {
+  return {
     model: process.env.OPENAI_MODEL ?? "gpt-5.5",
     reasoning: { effort: "low" },
     tools: [
@@ -125,16 +186,16 @@ async function callOpenAi(
     text: {
       format: {
         type: "json_schema",
-        name: "macro_radar_signals",
+        name: "macro_radar_extracted_candidates",
         strict: true,
-        schema: structuredOutputSchema
+        schema: extractionStructuredOutputSchema
       }
     },
     input: [
       {
         role: "system",
         content:
-          "You are Macro Radar, a high-precision financial event analyst. Return only cited, decision-support events. Do not recommend exact trades or claim certainty. Prefer fewer, higher-signal events."
+          "You are Macro Radar's extraction engine. Extract concrete macro, policy, earnings, filing, and company-news candidates from provided source items. Do not score them. Do not invent facts. Use only supplied source hashes and web-search verification when needed."
       },
       {
         role: "user",
@@ -143,8 +204,7 @@ async function callOpenAi(
           portfolio: watchlist.map((item) => ({
             symbol: item.symbol,
             name: item.name,
-            sector: item.sector,
-            portfolioWeight: item.portfolioWeight
+            sector: item.sector
           })),
           sourceItems: sourceItems.slice(0, 80).map((item) => ({
             sourceItemContentHash: item.contentHash,
@@ -156,19 +216,102 @@ async function callOpenAi(
             summary: item.summary,
             rawJson: item.rawJson
           })),
-          scoringGuidance: {
-            portfolioRelevance: "Direct holding or high sector/index exposure.",
-            timeProximity: "Higher for events within 1-21 days.",
-            magnitudeSurprise: "Potential surprise versus expectations or material market impact.",
-            sourceCredibility: "Official APIs and primary filings are highest.",
-            marketBreadth: "Higher when event can move rates, inflation, risk appetite, or broad indexes.",
-            modelConfidence: "Evidence quality and specificity."
-          }
+          extractionRules: [
+            "Prefer candidates with direct watchlist impact or broad macro impact.",
+            "Ignore generic PR, minor routine releases, or weakly sourced items.",
+            "Affected symbols must come from the provided portfolio watchlist only.",
+            "For macro events, affectedSymbols can be empty if the event is broad-market.",
+            "Every candidate must include at least one citation when a URL exists."
+          ]
         })
       }
     ]
   };
+}
 
+function buildRankingPayload(
+  candidates: ExtractedCandidate[],
+  sourceItems: SourceItemInput[],
+  watchlist: WatchlistItem[]
+) {
+  return {
+    model: process.env.OPENAI_MODEL ?? "gpt-5.5",
+    reasoning: { effort: "low" },
+    tools: [
+      {
+        type: "web_search",
+        search_context_size: "low"
+      }
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "macro_radar_ranked_signals",
+        strict: true,
+        schema: structuredOutputSchema
+      }
+    },
+    input: [
+      {
+        role: "system",
+        content:
+          "You are Macro Radar's ranking engine. Rank only evidence-backed investment-relevant events for a days-to-weeks horizon. Be selective. Prefer fewer high-signal outputs over a noisy feed. Never recommend exact orders, price targets, options trades, or auto-trading. Directional suggestions must be review-oriented, such as monitor, reduce concentration risk, hedge consideration, wait for confirmation, or prepare for volatility."
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          portfolio: watchlist.map((item) => ({
+            symbol: item.symbol,
+            name: item.name,
+            sector: item.sector
+          })),
+          extractedCandidates: candidates,
+          sourceItemsByHash: Object.fromEntries(
+            sourceItems.slice(0, 100).map((item) => [
+              item.contentHash,
+              {
+                sourceType: item.sourceType,
+                sourceName: item.sourceName,
+                title: item.title,
+                publishedAt: item.publishedAt?.toISOString(),
+                summary: item.summary,
+                rawJson: item.rawJson,
+                url: item.url
+              }
+            ])
+          ),
+          scoringRubric: {
+            portfolioRelevance:
+              "0-100. Direct watchlist ticker impact, sector/theme impact, or broad index/rate sensitivity. Do not use position size.",
+            timeProximity: "0-100. Highest for today through 7 days, still relevant up to 45 days.",
+            magnitudeSurprise:
+              "0-100. Higher when actual data changed sharply, release can surprise consensus, filing/news is material, or earnings could reset expectations.",
+            sourceCredibility:
+              "0-100. Official macro data, SEC filings, and primary company releases score highest; generic/news-only claims score lower.",
+            marketBreadth:
+              "0-100. Higher for rates, inflation, labor, GDP, Fed, or events affecting multiple watchlist names or market risk appetite.",
+            modelConfidence:
+              "0-100. Evidence quality, specificity, non-duplication, and clear causal mechanism. Penalize vague or stale items."
+          },
+          rankingRules: [
+            "Return only candidates that deserve user attention.",
+            "For watchlist-specific events, list affectedSymbols with relative relevance scores and mechanisms.",
+            "For broad macro events, affectedSymbols can include watchlist names most plausibly exposed; leave empty only if exposure is broad and nonspecific.",
+            "If score would be below 60, usually omit it.",
+            "Citations must point to actual source URLs when available.",
+            "Directional suggestions must be concrete but not exact trades."
+          ]
+        })
+      }
+    ]
+  };
+}
+
+async function callOpenAiJson<T>(
+  payload: Record<string, unknown>,
+  schema: z.ZodType<T>,
+  phase: string
+): Promise<{ ok: true; data: T } | { ok: false; warning: string }> {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -179,27 +322,21 @@ async function callOpenAi(
   });
 
   if (!response.ok) {
-    return {
-      signals: fallbackSignalsFromSources(sourceItems, watchlist),
-      warning: `OpenAI request failed (${response.status}); used deterministic source fallback.`
-    };
+    return { ok: false, warning: `OpenAI ${phase} request failed (${response.status})` };
   }
 
   const data = (await response.json()) as { output_text?: string; output?: unknown };
   const text = data.output_text ?? extractOutputText(data.output);
   if (!text) {
-    return {
-      signals: fallbackSignalsFromSources(sourceItems, watchlist),
-      warning: "OpenAI response had no output_text; used deterministic source fallback."
-    };
+    return { ok: false, warning: `OpenAI ${phase} response had no output_text` };
   }
 
   try {
-    return responseSchema.parse(JSON.parse(text));
+    return { ok: true, data: schema.parse(JSON.parse(text)) };
   } catch (error) {
     return {
-      signals: fallbackSignalsFromSources(sourceItems, watchlist),
-      warning: `OpenAI JSON parse failed; used deterministic source fallback. ${error instanceof Error ? error.message : ""}`
+      ok: false,
+      warning: `OpenAI ${phase} JSON validation failed${error instanceof Error ? `: ${error.message}` : ""}`
     };
   }
 }
@@ -238,7 +375,83 @@ function extractOutputText(output: unknown): string | null {
   return chunks.length ? chunks.join("\n") : null;
 }
 
-const structuredOutputSchema = {
+const citationJsonSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "url", "source", "publishedAt"],
+  properties: {
+    title: { type: "string" },
+    url: { type: "string" },
+    source: { type: "string" },
+    publishedAt: { type: ["string", "null"] }
+  }
+};
+
+const affectedSymbolJsonSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["symbol", "relevance", "rationale"],
+  properties: {
+    symbol: { type: "string" },
+    relevance: { type: "number", minimum: 0, maximum: 100 },
+    rationale: { type: "string" }
+  }
+};
+
+const extractionStructuredOutputSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["candidates"],
+  properties: {
+    candidates: {
+      type: "array",
+      maxItems: 30,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "sourceItemContentHash",
+          "eventType",
+          "title",
+          "summary",
+          "eventDate",
+          "citations",
+          "affectedSymbols",
+          "directionalSuggestion",
+          "reason",
+          "evidenceLevel",
+          "marketMechanism",
+          "whyNow"
+        ],
+        properties: {
+          sourceItemContentHash: { type: ["string", "null"] },
+          eventType: {
+            type: "string",
+            enum: ["macro_release", "central_bank", "earnings", "filing", "policy", "geopolitical", "news"]
+          },
+          title: { type: "string" },
+          summary: { type: "string" },
+          eventDate: { type: ["string", "null"] },
+          citations: {
+            type: "array",
+            items: citationJsonSchema
+          },
+          affectedSymbols: {
+            type: "array",
+            items: affectedSymbolJsonSchema
+          },
+          directionalSuggestion: { type: "string" },
+          reason: { type: "string" },
+          evidenceLevel: { type: "string", enum: ["strong", "medium", "weak"] },
+          marketMechanism: { type: "string" },
+          whyNow: { type: "string" }
+        }
+      }
+    }
+  }
+};
+
+const structuredOutputSchema: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
   required: ["signals"],
@@ -272,30 +485,11 @@ const structuredOutputSchema = {
           eventDate: { type: ["string", "null"] },
           citations: {
             type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["title", "url", "source"],
-              properties: {
-                title: { type: "string" },
-                url: { type: "string" },
-                source: { type: "string" },
-                publishedAt: { type: "string" }
-              }
-            }
+            items: citationJsonSchema
           },
           affectedSymbols: {
             type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["symbol", "relevance", "rationale"],
-              properties: {
-                symbol: { type: "string" },
-                relevance: { type: "number", minimum: 0, maximum: 100 },
-                rationale: { type: "string" }
-              }
-            }
+            items: affectedSymbolJsonSchema
           },
           directionalSuggestion: { type: "string" },
           reason: { type: "string" },
@@ -323,4 +517,4 @@ const structuredOutputSchema = {
       }
     }
   }
-} as const;
+};

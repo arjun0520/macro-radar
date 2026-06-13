@@ -95,6 +95,18 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_alert_event_channel ON alerts(event_id, channel);
 CREATE INDEX IF NOT EXISTS ix_alert_status ON alerts(status);
 
+CREATE TABLE IF NOT EXISTS signal_feedback (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  signal_score_id uuid NOT NULL REFERENCES signal_scores(id) ON DELETE CASCADE,
+  rating varchar(32) NOT NULL,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_signal_feedback_score ON signal_feedback(signal_score_id);
+CREATE INDEX IF NOT EXISTS ix_signal_feedback_rating ON signal_feedback(rating);
+
 CREATE TABLE IF NOT EXISTS job_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   job_type varchar(64) NOT NULL,

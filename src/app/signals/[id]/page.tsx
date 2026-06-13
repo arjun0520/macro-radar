@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 
 import { AppHeader } from "@/components/AppHeader";
 import { BottomNav } from "@/components/BottomNav";
-import { getSignal } from "@/db/repository";
+import { FeedbackControls } from "@/components/FeedbackControls";
+import { getSignal, getSignalFeedback } from "@/db/repository";
 import { requireUser } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,7 @@ export default async function SignalDetailPage({ params }: { params: Promise<{ i
   const { id } = await params;
   const signal = await getSignal(id);
   if (!signal) notFound();
+  const feedback = await getSignalFeedback(signal.id);
 
   return (
     <main className="mobile-shell">
@@ -78,6 +80,7 @@ export default async function SignalDetailPage({ params }: { params: Promise<{ i
         Macro Radar is decision support only. It does not provide financial advice, execute trades, or replace your own
         investment judgment.
       </section>
+      <FeedbackControls signalScoreId={signal.id} feedback={feedback} />
       <BottomNav />
     </main>
   );
