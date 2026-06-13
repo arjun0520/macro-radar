@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WatchlistItem } from "@/db/repository";
-import { extractAndScoreSignals, toSignalRecords } from "@/lib/llm/openai";
+import { extractAndScoreSignals, sanitizeEnvValue, toSignalRecords } from "@/lib/llm/openai";
 import type { RawSignalCandidate } from "@/lib/signals/scoring";
 
 const watchlist = [
@@ -20,10 +20,12 @@ const watchlist = [
 ] satisfies WatchlistItem[];
 
 const originalOpenAiKey = process.env.OPENAI_API_KEY;
+const originalOpenAiModel = process.env.OPENAI_MODEL;
 const originalFetch = global.fetch;
 
 afterEach(() => {
   process.env.OPENAI_API_KEY = originalOpenAiKey;
+  process.env.OPENAI_MODEL = originalOpenAiModel;
   global.fetch = originalFetch;
   vi.restoreAllMocks();
 });
@@ -62,8 +64,14 @@ describe("toSignalRecords", () => {
 });
 
 describe("extractAndScoreSignals", () => {
+  it("strips accidental wrapping quotes from env values", () => {
+    expect(sanitizeEnvValue('"gpt-5.5"')).toBe("gpt-5.5");
+    expect(sanitizeEnvValue("'gpt-5.5'")).toBe("gpt-5.5");
+  });
+
   it("keeps the top 20 signals when the LLM returns too many", async () => {
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_MODEL = '"gpt-5.5"';
     const rankedSignals = Array.from({ length: 25 }, (_, index): RawSignalCandidate => ({
       sourceItemContentHash: "source-hash",
       eventType: "macro_release",
@@ -85,7 +93,9 @@ describe("extractAndScoreSignals", () => {
     }));
 
     let callCount = 0;
-    global.fetch = vi.fn(async () => {
+    const seenModels: unknown[] = [];
+    global.fetch = vi.fn(async (_url, init) => {
+      seenModels.push(JSON.parse(String(init?.body)).model);
       callCount += 1;
       const payload =
         callCount === 1
@@ -126,6 +136,8 @@ describe("extractAndScoreSignals", () => {
     );
 
     expect(result.usedFallback).toBe(false);
+    expect(seenModels).toEqual(["gpt-5.5", "gpt-5.5"]);
+    expect(result.diagnostics.modelSanitized).toBe(true);
     expect(result.records).toHaveLength(20);
     expect(result.warnings[0]).toContain("kept top 20");
   });

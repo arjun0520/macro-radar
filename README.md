@@ -6,9 +6,10 @@ Mobile-first macro and portfolio signal dashboard for a single private user.
 
 - Maintains a manual US stock/ETF watchlist.
 - Runs a daily Vercel Cron digest.
-- Pulls free/official sources first: FRED, BLS API, SEC EDGAR, Federal Reserve RSS, Finnhub when configured, and optional Trading Economics/FMP calendars.
+- Pulls free/official sources first: FRED, BLS API, BEA, Treasury FiscalData, EIA, Census, SEC EDGAR, Federal Reserve RSS, Finnhub when configured, and optional Trading Economics/FMP calendars.
 - Uses the OpenAI Responses API with structured JSON to rank high-signal events.
 - Stores normalized source items, economic calendar events, macro events, signal scores, alerts, feedback, and job runs in Neon/Postgres via Drizzle.
+- Shows per-run source, LLM phase, fallback, and step-timing diagnostics in Settings.
 - Sends in-app alerts and optional email alerts for high-signal events.
 
 This app is decision support only. It does not place trades and does not provide financial advice.
@@ -47,8 +48,9 @@ Open `http://localhost:3000`, log in with `APP_PASSWORD`, add tickers, then use 
 1. Create a new Vercel project from this folder.
 2. Add a Neon/Postgres integration through Vercel Marketplace.
 3. Add the environment variables from `.env.example`.
-4. Deploy.
-5. Deploy. The daily digest auto-runs idempotent migrations before it touches the database unless `AUTO_RUN_MIGRATIONS="false"`.
+4. Deploy. The daily digest auto-runs idempotent migrations before it touches the database unless `AUTO_RUN_MIGRATIONS="false"`.
+
+For Vercel environment variables, paste values without wrapping quotes. For example, use `gpt-5.5`, not `"gpt-5.5"`, for `OPENAI_MODEL`.
 
 You can still run the protected migration endpoint manually when needed:
 
