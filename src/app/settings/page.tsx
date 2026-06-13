@@ -23,6 +23,8 @@ export default async function SettingsPage() {
     ["OpenAI", Boolean(process.env.OPENAI_API_KEY), "Responses API with web search"],
     ["Cron secret", Boolean(process.env.CRON_SECRET), "Protects scheduled digest endpoint"],
     ["FRED", Boolean(process.env.FRED_API_KEY), "Optional release calendar"],
+    ["Trading Economics", Boolean(process.env.TRADING_ECONOMICS_API_KEY), "Optional consensus economic calendar"],
+    ["FMP", Boolean(process.env.FMP_API_KEY ?? process.env.FINANCIAL_MODELING_PREP_API_KEY), "Optional fallback economic calendar"],
     ["Finnhub", Boolean(process.env.FINNHUB_API_KEY), "Optional earnings calendar"],
     ["Email", Boolean(process.env.SMTP_HOST && process.env.ALERT_EMAIL_TO), "Optional SMTP alerts"]
   ] as const;
@@ -55,10 +57,16 @@ export default async function SettingsPage() {
               jobs.map((job) => {
                 const details = job.details as {
                   sourceItemCount?: number;
+                  calendarEventCount?: number;
                   signalCount?: number;
                   pendingAlertCount?: number;
                   usedFallback?: boolean;
-                  sourceBreakdown?: Array<{ sourceName: string; sourceType: string; itemCount: number }>;
+                  sourceBreakdown?: Array<{
+                    sourceName: string;
+                    sourceType: string;
+                    itemCount: number;
+                    calendarEventCount?: number;
+                  }>;
                   warnings?: string[];
                 };
                 return (
@@ -67,7 +75,8 @@ export default async function SettingsPage() {
                       {job.status} · {job.startedAt.toLocaleString()}
                     </p>
                     <p className="mt-1 text-xs text-ink/50">
-                      Sources: {details.sourceItemCount ?? 0} · Signals: {details.signalCount ?? 0} · Alerts:{" "}
+                      Sources: {details.sourceItemCount ?? 0} · Calendar: {details.calendarEventCount ?? 0} · Signals:{" "}
+                      {details.signalCount ?? 0} · Alerts:{" "}
                       {details.pendingAlertCount ?? 0} {details.usedFallback ? "· fallback ranking" : ""}
                     </p>
                     {details.sourceBreakdown?.length ? (
@@ -77,7 +86,7 @@ export default async function SettingsPage() {
                             key={`${job.id}-${source.sourceType}-${source.sourceName}`}
                             className="rounded-full bg-limewash px-3 py-1 text-[11px] font-bold text-forest"
                           >
-                            {source.sourceName}: {source.itemCount}
+                            {source.sourceName}: {source.itemCount + (source.calendarEventCount ?? 0)}
                           </span>
                         ))}
                       </div>

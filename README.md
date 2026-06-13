@@ -6,9 +6,9 @@ Mobile-first macro and portfolio signal dashboard for a single private user.
 
 - Maintains a manual US stock/ETF watchlist.
 - Runs a daily Vercel Cron digest.
-- Pulls free/official sources first: FRED, BLS RSS, SEC EDGAR, Finnhub earnings when configured, and curated macro RSS.
+- Pulls free/official sources first: FRED, BLS API, SEC EDGAR, Federal Reserve RSS, Finnhub when configured, and optional Trading Economics/FMP calendars.
 - Uses the OpenAI Responses API with web search and structured JSON to rank high-signal events.
-- Stores normalized source items, events, signal scores, alerts, and job runs in Neon/Postgres via Drizzle.
+- Stores normalized source items, economic calendar events, macro events, signal scores, alerts, feedback, and job runs in Neon/Postgres via Drizzle.
 - Sends in-app alerts and optional email alerts for high-signal events.
 
 This app is decision support only. It does not place trades and does not provide financial advice.
@@ -48,7 +48,12 @@ Open `http://localhost:3000`, log in with `APP_PASSWORD`, add tickers, then use 
 2. Add a Neon/Postgres integration through Vercel Marketplace.
 3. Add the environment variables from `.env.example`.
 4. Deploy.
-5. Run `npm run db:migrate` from a local shell pointed at the production `DATABASE_URL`, or use a CI migration step.
+5. Run the protected production migration endpoint after deploy:
+
+```bash
+curl -X POST https://YOUR_DOMAIN/api/admin/migrate \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
 
 Vercel Cron invokes `/api/jobs/daily-digest` on weekdays. The route requires `CRON_SECRET` for external requests and also accepts an authenticated manual run from the UI.
 

@@ -6,6 +6,7 @@ import {
   listPendingAlerts,
   listWatchlistItems,
   markAlerts,
+  upsertEconomicCalendarEvents,
   saveSignalRecords,
   startJobRun,
   upsertSourceItems
@@ -41,6 +42,7 @@ export async function runDailyDigest({ force = false }: { force?: boolean } = {}
     const watchlist = await listWatchlistItems(true);
     const sourceResult = await collectAllSources(watchlist);
     const sourceRows = await upsertSourceItems(sourceResult.items);
+    const calendarRows = await upsertEconomicCalendarEvents(sourceResult.calendarEvents ?? []);
     const llmResult = await extractAndScoreSignals(sourceResult.items, watchlist);
     const savedSignals = await saveSignalRecords(llmResult.records);
     const pendingAlerts = await createPendingAlertsForSignals(savedSignals, 80);
@@ -64,6 +66,8 @@ export async function runDailyDigest({ force = false }: { force?: boolean } = {}
       watchlistCount: watchlist.length,
       sourceItemCount: sourceResult.items.length,
       storedSourceItemCount: sourceRows.length,
+      calendarEventCount: sourceResult.calendarEvents?.length ?? 0,
+      storedCalendarEventCount: calendarRows.length,
       signalCount: savedSignals.length,
       pendingAlertCount: pendingAlerts.length,
       emailStatus: emailResult.status,

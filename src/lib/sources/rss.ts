@@ -14,22 +14,6 @@ const MACRO_FEEDS = [
   {
     sourceName: "Federal Reserve Press Releases",
     url: "https://www.federalreserve.gov/feeds/press_all.xml"
-  },
-  {
-    sourceName: "U.S. Treasury Press Releases",
-    url: "https://home.treasury.gov/news/press-releases/rss"
-  },
-  {
-    sourceName: "BLS CPI Releases",
-    url: "https://www.bls.gov/feeds/news_release/cpi.rss"
-  },
-  {
-    sourceName: "BLS Employment Situation",
-    url: "https://www.bls.gov/feeds/news_release/empsit.rss"
-  },
-  {
-    sourceName: "BEA News",
-    url: "https://www.bea.gov/news/glance/rss.xml"
   }
 ] as const;
 

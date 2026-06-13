@@ -110,6 +110,48 @@ const MACRO_SERIES: MacroSeries[] = [
     unit: "billions",
     theme: "growth",
     highImpactKeywords: ["growth", "recession risk", "broad market"]
+  },
+  {
+    seriesId: "DFF",
+    label: "Effective Federal Funds Rate",
+    unit: "%",
+    theme: "policy rates",
+    highImpactKeywords: ["Federal Reserve", "rates", "discount rates", "duration-sensitive equities"]
+  },
+  {
+    seriesId: "DGS2",
+    label: "2-Year Treasury Yield",
+    unit: "%",
+    theme: "front-end rates",
+    highImpactKeywords: ["rates", "Fed path", "growth stocks"]
+  },
+  {
+    seriesId: "DGS10",
+    label: "10-Year Treasury Yield",
+    unit: "%",
+    theme: "long-end rates",
+    highImpactKeywords: ["rates", "mortgages", "valuation multiples"]
+  },
+  {
+    seriesId: "T10Y2Y",
+    label: "10-Year minus 2-Year Treasury Spread",
+    unit: "%",
+    theme: "yield curve",
+    highImpactKeywords: ["yield curve", "recession risk", "banks"]
+  },
+  {
+    seriesId: "VIXCLS",
+    label: "CBOE Volatility Index",
+    unit: "index",
+    theme: "risk appetite",
+    highImpactKeywords: ["volatility", "risk appetite", "broad market"]
+  },
+  {
+    seriesId: "DTWEXBGS",
+    label: "Trade Weighted U.S. Dollar Index",
+    unit: "index",
+    theme: "dollar",
+    highImpactKeywords: ["dollar", "multinationals", "commodities"]
   }
 ];
 
@@ -196,6 +238,8 @@ export async function collectFredMacroIntelligence(): Promise<SourceCollectionRe
       const change = latest.value - previous.value;
       const pctChange = previous.value === 0 ? null : (change / previous.value) * 100;
       const zScore = calculateLatestChangeZScore(observations);
+      const surpriseScore = zScore == null ? 55 : clamp(Math.round(Math.abs(zScore) * 22 + 45));
+      const impactScore = clamp(Math.round(surpriseScore * 0.6 + 90 * 0.4));
       const direction = change > 0 ? "rose" : change < 0 ? "fell" : "was unchanged";
       const pctText = pctChange == null ? "" : ` (${pctChange >= 0 ? "+" : ""}${pctChange.toFixed(2)}%)`;
       const surpriseText =
@@ -225,7 +269,16 @@ export async function collectFredMacroIntelligence(): Promise<SourceCollectionRe
           change,
           pctChange,
           zScore,
-          observationCount: observations.length
+          observationCount: observations.length,
+          macroImpact: {
+            surprisePct: pctChange,
+            surpriseScore,
+            importanceScore: 90,
+            impactScore,
+            hasActual: true,
+            hasConsensus: false,
+            hasPrevious: true
+          }
         }
       });
     } catch (error) {
@@ -260,4 +313,9 @@ function calculateLatestChangeZScore(observations: Array<{ date: string; value: 
 
 function formatNumber(value: number): string {
   return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function clamp(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
 }

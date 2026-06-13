@@ -47,6 +47,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_source_items_content_hash ON source_items(c
 CREATE INDEX IF NOT EXISTS ix_source_items_source ON source_items(source_type, source_name);
 CREATE INDEX IF NOT EXISTS ix_source_items_published_at ON source_items(published_at);
 
+CREATE TABLE IF NOT EXISTS economic_calendar_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_item_id uuid REFERENCES source_items(id) ON DELETE SET NULL,
+  provider varchar(32) NOT NULL,
+  external_id text NOT NULL,
+  country text,
+  category text,
+  event_name text NOT NULL,
+  event_date timestamptz,
+  actual real,
+  previous real,
+  consensus real,
+  forecast real,
+  importance varchar(32),
+  impact_score integer,
+  surprise_score integer,
+  url text,
+  raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_economic_calendar_provider_external ON economic_calendar_events(provider, external_id);
+CREATE INDEX IF NOT EXISTS ix_economic_calendar_event_date ON economic_calendar_events(event_date);
+CREATE INDEX IF NOT EXISTS ix_economic_calendar_importance ON economic_calendar_events(importance);
+CREATE INDEX IF NOT EXISTS ix_economic_calendar_impact_score ON economic_calendar_events(impact_score);
+
 CREATE TABLE IF NOT EXISTS macro_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   source_item_id uuid REFERENCES source_items(id) ON DELETE SET NULL,
