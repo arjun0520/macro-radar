@@ -7,6 +7,7 @@ import {
   alerts,
   type AffectedSymbol,
   type Citation,
+  economicCalendarEvents,
   jobRuns,
   macroEvents,
   type ScoreBreakdown,
@@ -15,7 +16,7 @@ import {
   sourceItems,
   watchlistItems
 } from "@/db/schema";
-import type { SourceItemInput } from "@/lib/sources/types";
+import type { EconomicCalendarEventInput, SourceItemInput } from "@/lib/sources/types";
 
 export type WatchlistItem = typeof watchlistItems.$inferSelect;
 export type SignalScore = typeof signalScores.$inferSelect;
@@ -23,6 +24,7 @@ export type MacroEvent = typeof macroEvents.$inferSelect;
 export type AlertRecord = typeof alerts.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
 export type SignalFeedback = typeof signalFeedback.$inferSelect;
+export type EconomicCalendarEvent = typeof economicCalendarEvents.$inferSelect;
 
 export type SignalWithEvent = SignalScore & {
   event: MacroEvent;
@@ -137,6 +139,63 @@ export async function upsertSourceItems(items: SourceItemInput[]) {
           publishedAt: item.publishedAt ?? null,
           summary: item.summary ?? null,
           rawJson: item.rawJson ?? {}
+        }
+      })
+      .returning();
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+export async function upsertEconomicCalendarEvents(events: EconomicCalendarEventInput[]) {
+  if (events.length === 0) return [];
+  const db = requireDatabase();
+  const sourceRows = await db.select().from(sourceItems);
+  const sourceByHash = new Map(sourceRows.map((item) => [item.contentHash, item.id]));
+  const rows: EconomicCalendarEvent[] = [];
+
+  for (const event of events) {
+    const sourceItemId = event.sourceItemContentHash ? sourceByHash.get(event.sourceItemContentHash) ?? null : null;
+    const [row] = await db
+      .insert(economicCalendarEvents)
+      .values({
+        sourceItemId,
+        provider: event.provider,
+        externalId: event.externalId,
+        country: event.country ?? null,
+        category: event.category ?? null,
+        eventName: event.eventName,
+        eventDate: event.eventDate ?? null,
+        actual: event.actual ?? null,
+        previous: event.previous ?? null,
+        consensus: event.consensus ?? null,
+        forecast: event.forecast ?? null,
+        importance: event.importance ?? null,
+        impactScore: event.impactScore ?? null,
+        surpriseScore: event.surpriseScore ?? null,
+        url: event.url ?? null,
+        rawJson: event.rawJson ?? {},
+        updatedAt: new Date()
+      })
+      .onConflictDoUpdate({
+        target: [economicCalendarEvents.provider, economicCalendarEvents.externalId],
+        set: {
+          sourceItemId,
+          country: event.country ?? null,
+          category: event.category ?? null,
+          eventName: event.eventName,
+          eventDate: event.eventDate ?? null,
+          actual: event.actual ?? null,
+          previous: event.previous ?? null,
+          consensus: event.consensus ?? null,
+          forecast: event.forecast ?? null,
+          importance: event.importance ?? null,
+          impactScore: event.impactScore ?? null,
+          surpriseScore: event.surpriseScore ?? null,
+          url: event.url ?? null,
+          rawJson: event.rawJson ?? {},
+          updatedAt: new Date()
         }
       })
       .returning();

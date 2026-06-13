@@ -55,7 +55,7 @@ const candidateSchema: z.ZodType<RawSignalCandidate> = z.object({
 }) as z.ZodType<RawSignalCandidate>;
 
 const responseSchema: z.ZodType<{ signals: RawSignalCandidate[] }> = z.object({
-  signals: z.array(candidateSchema).max(20)
+  signals: z.array(candidateSchema)
 }) as z.ZodType<{ signals: RawSignalCandidate[] }>;
 
 const extractedCandidateSchema: z.ZodType<ExtractedCandidate> = z.object({
@@ -102,10 +102,17 @@ export async function extractAndScoreSignals(
     };
   }
 
+  const enrichedSignals = applySourceScoreHints(parsed.data.signals, sourceItems);
+  const selectedSignals = selectTopCandidates(enrichedSignals, watchlist, 20);
+  const warnings = candidates.warning ? [candidates.warning] : [];
+  if (enrichedSignals.length > selectedSignals.length) {
+    warnings.push(`LLM returned ${enrichedSignals.length} signals; kept top ${selectedSignals.length}.`);
+  }
+
   return {
-    records: toSignalRecords(parsed.data.signals, watchlist),
+    records: toSignalRecords(selectedSignals, watchlist),
     usedFallback: Boolean(candidates.warning),
-    warnings: candidates.warning ? [candidates.warning] : []
+    warnings
   };
 }
 
@@ -174,6 +181,7 @@ async function callOpenAi(
 }
 
 function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: WatchlistItem[]) {
+  const prioritizedSourceItems = prioritizeSourceItemsForLlm(sourceItems).slice(0, 100);
   return {
     model: process.env.OPENAI_MODEL ?? "gpt-5.5",
     reasoning: { effort: "low" },
@@ -206,7 +214,7 @@ function buildExtractionPayload(sourceItems: SourceItemInput[], watchlist: Watch
             name: item.name,
             sector: item.sector
           })),
-          sourceItems: sourceItems.slice(0, 80).map((item) => ({
+          sourceItems: prioritizedSourceItems.map((item) => ({
             sourceItemContentHash: item.contentHash,
             sourceType: item.sourceType,
             sourceName: item.sourceName,
@@ -234,6 +242,7 @@ function buildRankingPayload(
   sourceItems: SourceItemInput[],
   watchlist: WatchlistItem[]
 ) {
+  const prioritizedSourceItems = prioritizeSourceItemsForLlm(sourceItems).slice(0, 120);
   return {
     model: process.env.OPENAI_MODEL ?? "gpt-5.5",
     reasoning: { effort: "low" },
@@ -267,7 +276,7 @@ function buildRankingPayload(
           })),
           extractedCandidates: candidates,
           sourceItemsByHash: Object.fromEntries(
-            sourceItems.slice(0, 100).map((item) => [
+            prioritizedSourceItems.map((item) => [
               item.contentHash,
               {
                 sourceType: item.sourceType,
@@ -297,7 +306,8 @@ function buildRankingPayload(
             "Return only candidates that deserve user attention.",
             "For watchlist-specific events, list affectedSymbols with relative relevance scores and mechanisms.",
             "For broad macro events, affectedSymbols can include watchlist names most plausibly exposed; leave empty only if exposure is broad and nonspecific.",
-            "If score would be below 60, usually omit it.",
+            "Return at most 12 signals. If score would be below 60, usually omit it.",
+            "Use normalizedCalendarEvent and macroImpact fields when present. Actual-vs-consensus surprise and source-provided impact scores should strongly inform magnitudeSurprise.",
             "Citations must point to actual source URLs when available.",
             "Directional suggestions must be concrete but not exact trades."
           ]
@@ -305,6 +315,76 @@ function buildRankingPayload(
       }
     ]
   };
+}
+
+function applySourceScoreHints(candidates: RawSignalCandidate[], sourceItems: SourceItemInput[]): RawSignalCandidate[] {
+  const byHash = new Map(sourceItems.map((item) => [item.contentHash, item]));
+  return candidates.map((candidate) => {
+    if (!candidate.sourceItemContentHash) return candidate;
+    const source = byHash.get(candidate.sourceItemContentHash);
+    const macroImpact = readMacroImpact(source?.rawJson);
+    if (!source || !macroImpact) return candidate;
+
+    return {
+      ...candidate,
+      breakdown: {
+        ...candidate.breakdown,
+        magnitudeSurprise: Math.max(candidate.breakdown.magnitudeSurprise ?? 0, macroImpact.surpriseScore ?? 0),
+        sourceCredibility: Math.max(candidate.breakdown.sourceCredibility ?? 0, sourceCredibilityScore(source.sourceType)),
+        marketBreadth: Math.max(candidate.breakdown.marketBreadth ?? 0, macroImpact.impactScore ?? 0),
+        modelConfidence: Math.max(candidate.breakdown.modelConfidence ?? 0, macroImpact.hasActual ? 78 : 62)
+      }
+    };
+  });
+}
+
+function prioritizeSourceItemsForLlm(sourceItems: SourceItemInput[]): SourceItemInput[] {
+  return sourceItems
+    .slice()
+    .sort((left, right) => sourceItemPriority(right) - sourceItemPriority(left));
+}
+
+function sourceItemPriority(item: SourceItemInput): number {
+  const macroImpact = readMacroImpact(item.rawJson);
+  const ageDays = item.publishedAt ? Math.abs(Date.now() - item.publishedAt.getTime()) / (24 * 60 * 60_000) : 30;
+  const recencyScore = ageDays <= 3 ? 25 : ageDays <= 14 ? 15 : ageDays <= 45 ? 5 : 0;
+  return (macroImpact?.impactScore ?? 45) + sourceCredibilityScore(item.sourceType) * 0.4 + recencyScore;
+}
+
+function selectTopCandidates(
+  candidates: RawSignalCandidate[],
+  watchlist: WatchlistItem[],
+  limit: number
+): RawSignalCandidate[] {
+  return candidates
+    .slice()
+    .sort((left, right) => calculateSignalScore(right, watchlist).score - calculateSignalScore(left, watchlist).score)
+    .slice(0, limit);
+}
+
+function readMacroImpact(rawJson?: Record<string, unknown>): {
+  surpriseScore?: number;
+  impactScore?: number;
+  hasActual?: boolean;
+} | null {
+  const macroImpact = rawJson?.macroImpact;
+  if (!macroImpact || typeof macroImpact !== "object") return null;
+  const record = macroImpact as Record<string, unknown>;
+  return {
+    surpriseScore: readNumber(record.surpriseScore),
+    impactScore: readNumber(record.impactScore),
+    hasActual: record.hasActual === true
+  };
+}
+
+function sourceCredibilityScore(sourceType: SourceItemInput["sourceType"]): number {
+  if (["bls", "fred", "sec"].includes(sourceType)) return 94;
+  if (["trading_economics", "fmp", "finnhub"].includes(sourceType)) return 82;
+  return 72;
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 async function callOpenAiJson<T>(

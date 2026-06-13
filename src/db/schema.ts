@@ -81,6 +81,37 @@ export const sourceItems = pgTable(
   })
 );
 
+export const economicCalendarEvents = pgTable(
+  "economic_calendar_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    sourceItemId: uuid("source_item_id").references(() => sourceItems.id, { onDelete: "set null" }),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    externalId: text("external_id").notNull(),
+    country: text("country"),
+    category: text("category"),
+    eventName: text("event_name").notNull(),
+    eventDate: timestamp("event_date", { withTimezone: true }),
+    actual: real("actual"),
+    previous: real("previous"),
+    consensus: real("consensus"),
+    forecast: real("forecast"),
+    importance: varchar("importance", { length: 32 }),
+    impactScore: integer("impact_score"),
+    surpriseScore: integer("surprise_score"),
+    url: text("url"),
+    rawJson: jsonb("raw_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    providerExternalIdx: uniqueIndex("ux_economic_calendar_provider_external").on(table.provider, table.externalId),
+    eventDateIdx: index("ix_economic_calendar_event_date").on(table.eventDate),
+    importanceIdx: index("ix_economic_calendar_importance").on(table.importance),
+    impactIdx: index("ix_economic_calendar_impact_score").on(table.impactScore)
+  })
+);
+
 export const macroEvents = pgTable(
   "macro_events",
   {
