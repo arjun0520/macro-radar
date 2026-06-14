@@ -9,7 +9,7 @@ import {
 } from "@/lib/signals/scoring";
 import type { SourceItemInput } from "@/lib/sources/types";
 
-const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
 
 type ExtractedCandidate = Omit<RawSignalCandidate, "breakdown"> & {
   evidenceLevel: "strong" | "medium" | "weak";
@@ -27,18 +27,30 @@ export type LlmPhaseDiagnostic = {
   durationMs: number;
   inputCount?: number;
   outputCount?: number;
+  tokenUsage?: LlmTokenUsage;
   errorCode?: string;
   errorMessage?: string;
+};
+
+export type LlmTokenUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  reasoningOutputTokens?: number;
 };
 
 export type LlmDiagnostics = {
   enabled: boolean;
   requestedModel?: string;
   sanitizedModel?: string;
+  extractionModel?: string;
+  rankingModel?: string;
   modelSanitized: boolean;
   fallbackModel?: string;
   fallbackModelUsed: boolean;
   phases: LlmPhaseDiagnostic[];
+  tokenUsage?: LlmTokenUsage;
   finalSignalCount?: number;
   selectedSignalCount?: number;
 };
@@ -196,13 +208,14 @@ async function callOpenAi(
   watchlist: WatchlistItem[]
 ): Promise<OpenAiSignalResult> {
   const diagnostics = createLlmDiagnostics(true);
-  const model = diagnostics.sanitizedModel ?? DEFAULT_OPENAI_MODEL;
+  const extractionModel = diagnostics.extractionModel ?? diagnostics.sanitizedModel ?? DEFAULT_OPENAI_MODEL;
+  const rankingModel = diagnostics.rankingModel ?? diagnostics.sanitizedModel ?? DEFAULT_OPENAI_MODEL;
   const extracted = await callOpenAiJsonWithFallback(
     (selectedModel) => buildExtractionPayload(sourceItems, watchlist, selectedModel),
     extractionResponseSchema,
     "extraction",
     diagnostics,
-    model,
+    extractionModel,
     sourceItems.length
   );
 
@@ -223,7 +236,7 @@ async function callOpenAi(
     responseSchema,
     "ranking",
     diagnostics,
-    model,
+    rankingModel,
     extracted.data.candidates.length
   );
 
@@ -473,13 +486,14 @@ async function callOpenAiJson<T>(
     };
   }
 
-  const data = (await response.json()) as { output_text?: string; output?: unknown };
+  const data = (await response.json()) as { output_text?: string; output?: unknown; usage?: unknown };
+  const tokenUsage = readTokenUsage(data.usage);
   const text = data.output_text ?? extractOutputText(data.output);
   if (!text) {
     return {
       ok: false,
       warning: `OpenAI ${phase} response had no output_text`,
-      diagnostic: { ...baseDiagnostic, ok: false, status: response.status, errorCode: "missing_output_text" }
+      diagnostic: { ...baseDiagnostic, ok: false, status: response.status, tokenUsage, errorCode: "missing_output_text" }
     };
   }
 
@@ -492,6 +506,7 @@ async function callOpenAiJson<T>(
         ...baseDiagnostic,
         ok: true,
         status: response.status,
+        tokenUsage,
         outputCount: countOutputItems(parsed)
       }
     };
@@ -503,6 +518,7 @@ async function callOpenAiJson<T>(
         ...baseDiagnostic,
         ok: false,
         status: response.status,
+        tokenUsage,
         errorCode: "json_validation_failed",
         errorMessage: error instanceof Error ? error.message : undefined
       }
@@ -519,7 +535,7 @@ async function callOpenAiJsonWithFallback<T>(
   inputCount?: number
 ): Promise<OpenAiCallResult<T>> {
   const primaryResult = await callOpenAiJson(buildPayload(model), schema, phase, model, inputCount);
-  diagnostics.phases.push(primaryResult.diagnostic);
+  recordPhaseDiagnostic(diagnostics, primaryResult.diagnostic);
 
   if (!primaryResult.ok && primaryResult.diagnostic.errorCode === "model_not_found" && diagnostics.fallbackModel) {
     const fallbackResult = await callOpenAiJson(
@@ -530,7 +546,7 @@ async function callOpenAiJsonWithFallback<T>(
       inputCount
     );
     diagnostics.fallbackModelUsed = true;
-    diagnostics.phases.push(fallbackResult.diagnostic);
+    recordPhaseDiagnostic(diagnostics, fallbackResult.diagnostic);
     return fallbackResult;
   }
 
@@ -540,12 +556,21 @@ async function callOpenAiJsonWithFallback<T>(
 function createLlmDiagnostics(enabled: boolean): LlmDiagnostics {
   const requestedModel = process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
   const sanitizedModel = sanitizeEnvValue(requestedModel) ?? DEFAULT_OPENAI_MODEL;
+  const requestedExtractionModel = process.env.OPENAI_EXTRACTION_MODEL?.trim();
+  const requestedRankingModel = process.env.OPENAI_RANKING_MODEL?.trim();
+  const extractionModel = sanitizeEnvValue(requestedExtractionModel) ?? sanitizedModel;
+  const rankingModel = sanitizeEnvValue(requestedRankingModel) ?? sanitizedModel;
   const fallbackModel = sanitizeEnvValue(process.env.OPENAI_FALLBACK_MODEL);
   return {
     enabled,
     requestedModel,
     sanitizedModel,
-    modelSanitized: requestedModel !== sanitizedModel,
+    extractionModel,
+    rankingModel,
+    modelSanitized:
+      requestedModel !== sanitizedModel ||
+      Boolean(requestedExtractionModel && requestedExtractionModel !== extractionModel) ||
+      Boolean(requestedRankingModel && requestedRankingModel !== rankingModel),
     fallbackModel: fallbackModel && fallbackModel !== sanitizedModel ? fallbackModel : undefined,
     fallbackModelUsed: false,
     phases: []
@@ -555,12 +580,14 @@ function createLlmDiagnostics(enabled: boolean): LlmDiagnostics {
 export function sanitizeEnvValue(value?: string | null): string | undefined {
   let normalized = value?.trim();
   if (!normalized) return undefined;
+  if (["undefined", "null"].includes(normalized.toLowerCase())) return undefined;
 
   for (let index = 0; index < 3; index += 1) {
     const hasDoubleQuotes = normalized.startsWith('"') && normalized.endsWith('"');
     const hasSingleQuotes = normalized.startsWith("'") && normalized.endsWith("'");
     if (!hasDoubleQuotes && !hasSingleQuotes) break;
     normalized = normalized.slice(1, -1).trim();
+    if (["undefined", "null"].includes(normalized.toLowerCase())) return undefined;
   }
 
   return normalized || undefined;
@@ -587,6 +614,46 @@ function countOutputItems(value: unknown): number | undefined {
     return (value as { candidates: unknown[] }).candidates.length;
   }
   return undefined;
+}
+
+function recordPhaseDiagnostic(diagnostics: LlmDiagnostics, phase: LlmPhaseDiagnostic) {
+  diagnostics.phases.push(phase);
+  diagnostics.tokenUsage = addTokenUsage(diagnostics.tokenUsage, phase.tokenUsage);
+}
+
+function readTokenUsage(usage: unknown): LlmTokenUsage | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const record = usage as Record<string, unknown>;
+  const inputDetails = readRecord(record.input_tokens_details);
+  const outputDetails = readRecord(record.output_tokens_details);
+  const tokenUsage = {
+    inputTokens: readNumber(record.input_tokens),
+    outputTokens: readNumber(record.output_tokens),
+    totalTokens: readNumber(record.total_tokens),
+    cachedInputTokens: readNumber(inputDetails?.cached_tokens),
+    reasoningOutputTokens: readNumber(outputDetails?.reasoning_tokens)
+  };
+  return Object.values(tokenUsage).some((value) => value != null) ? tokenUsage : undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+function addTokenUsage(left?: LlmTokenUsage, right?: LlmTokenUsage): LlmTokenUsage | undefined {
+  if (!left && !right) return undefined;
+  return {
+    inputTokens: addOptionalNumbers(left?.inputTokens, right?.inputTokens),
+    outputTokens: addOptionalNumbers(left?.outputTokens, right?.outputTokens),
+    totalTokens: addOptionalNumbers(left?.totalTokens, right?.totalTokens),
+    cachedInputTokens: addOptionalNumbers(left?.cachedInputTokens, right?.cachedInputTokens),
+    reasoningOutputTokens: addOptionalNumbers(left?.reasoningOutputTokens, right?.reasoningOutputTokens)
+  };
+}
+
+function addOptionalNumbers(left?: number, right?: number): number | undefined {
+  if (left == null && right == null) return undefined;
+  return (left ?? 0) + (right ?? 0);
 }
 
 function parseEventDate(value?: string | null): Date | null {
