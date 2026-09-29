@@ -68,9 +68,12 @@ export default async function SettingsPage() {
                     enabled?: boolean;
                     requestedModel?: string;
                     sanitizedModel?: string;
+                    extractionModel?: string;
+                    rankingModel?: string;
                     modelSanitized?: boolean;
                     fallbackModel?: string;
                     fallbackModelUsed?: boolean;
+                    tokenUsage?: TokenUsageDetails;
                     finalSignalCount?: number;
                     selectedSignalCount?: number;
                     phases?: Array<{
@@ -81,6 +84,7 @@ export default async function SettingsPage() {
                       durationMs?: number;
                       inputCount?: number;
                       outputCount?: number;
+                      tokenUsage?: TokenUsageDetails;
                       errorCode?: string;
                       errorMessage?: string;
                     }>;
@@ -141,6 +145,7 @@ export default async function SettingsPage() {
                                 title={phase.errorMessage}
                               >
                                 {phase.phase}: {phase.ok ? "ok" : phase.errorCode ?? "failed"} · {phase.durationMs ?? 0}ms
+                                {phase.tokenUsage?.totalTokens ? ` · ${formatNumber(phase.tokenUsage.totalTokens)} tok` : ""}
                               </span>
                             ))}
                           </div>
@@ -194,8 +199,11 @@ export default async function SettingsPage() {
 function formatLlmSummary(llm: {
   enabled?: boolean;
   sanitizedModel?: string;
+  extractionModel?: string;
+  rankingModel?: string;
   fallbackModel?: string;
   fallbackModelUsed?: boolean;
+  tokenUsage?: TokenUsageDetails;
   finalSignalCount?: number;
   selectedSignalCount?: number;
   phases?: Array<{ ok: boolean }>;
@@ -204,12 +212,33 @@ function formatLlmSummary(llm: {
   const phases = llm.phases ?? [];
   const okCount = phases.filter((phase) => phase.ok).length;
   const phaseText = phases.length ? `${okCount}/${phases.length} phases ok` : "not called";
+  const modelText = formatModelText(llm);
   const fallbackText = llm.fallbackModelUsed ? ` · fallback model used${llm.fallbackModel ? ` (${llm.fallbackModel})` : ""}` : "";
+  const tokenText = llm.tokenUsage?.totalTokens ? ` · ${formatNumber(llm.tokenUsage.totalTokens)} tokens` : "";
   const signalText =
     llm.selectedSignalCount == null
       ? ""
       : ` · selected ${llm.selectedSignalCount}${llm.finalSignalCount == null ? "" : ` of ${llm.finalSignalCount}`}`;
-  return `${llm.sanitizedModel ?? "model unset"} · ${phaseText}${fallbackText}${signalText}`;
+  return `${modelText} · ${phaseText}${fallbackText}${tokenText}${signalText}`;
+}
+
+type TokenUsageDetails = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  reasoningOutputTokens?: number;
+};
+
+function formatModelText(llm: { sanitizedModel?: string; extractionModel?: string; rankingModel?: string }): string {
+  if (llm.extractionModel && llm.rankingModel && llm.extractionModel !== llm.rankingModel) {
+    return `extract ${llm.extractionModel} · rank ${llm.rankingModel}`;
+  }
+  return llm.sanitizedModel ?? llm.extractionModel ?? llm.rankingModel ?? "model unset";
+}
+
+function formatNumber(value: number): string {
+  return value.toLocaleString("en-US");
 }
 
 function humanizeStep(step: string): string {
